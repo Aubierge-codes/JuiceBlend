@@ -1,0 +1,470 @@
+// ===========================================================================
+//  KcBlendz — Prisma schema
+//  PostgreSQL with JSONB customizations, soft-delete on products, audit log,
+//  multi-store isolation enforced at row level via `store` column.
+// ===========================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---- Enums ----------------------------------------------------------------
+
+enum Store {
+  NG // Nigeria store — NGN, Lagos delivery
+  MU // Mauritius store — MUR, Mauritius delivery
+  GL // Global store — USD, international shelf-stable only
+}
+
+enum Currency {
+  NGN
+  MUR
+  USD
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  STAFF // staff can fulfill orders but not manage users
+}
+
+enum ProductCategory {
+  SMOOTHIE
+  JUICE
+  WELLNESS_SHOT
+  BOWL
+  POPSICLE
+  PROBIOTIC
+  DRIED_FRUIT
+  FRUIT_POWDER
+  PARTY_PACK
+  CUSTOM_BLEND // produced by the smoothie builder, not directly listed
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  PREPARING
+  OUT_FOR_DELIVERY
+  READY_FOR_PICKUP
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentGateway {
+  PAYSTACK
+  STRIPE
+  BANK_TRANSFER // manual, requires proof upload + admin verification
+}
+
+enum PaymentStatus {
+  INITIATED
+  AWAITING_VERIFICATION // bank transfer: customer uploaded proof
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum DeliveryMethod {
+  PICKUP
+  STANDARD_DELIVERY
+  EXPRESS_DELIVERY
+}
+
+enum NotificationChannel {
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+// ---- Core ----------------------------------------------------------------
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  phone         String?  @unique // E.164, used as WhatsApp identifier
+  passwordHash  String
+  fullName      String
+  role          UserRole @default(CUSTOMER)
+  preferredStore Store   @default(NG)
+  // MFA — only required for ADMIN/STAFF
+  mfaEnabled    Boolean  @default(false)
+  mfaSecret     String?  // TOTP secret, AES-256 encrypted at app layer
+  // Loyalty (out of MVP scope per proposal — kept nullable for forward-compat)
+  loyaltyPoints Int      @default(0)
+  // Lifecycle
+  emailVerifiedAt DateTime?
+  lastLoginAt   DateTime?
+  failedLoginCount Int   @default(0)
+  lockedUntil   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime? // GDPR right-to-deletion soft-delete
+
+  orders        Order[]
+  addresses     Address[]
+  sessions      Session[]
+  auditLogs     AuditLog[] @relation("AuditActor")
+  notifications Notification[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName  String
+  phone     String
+  line1     String
+  line2     String?
+  city      String
+  state     String?
+  zip       String?
+  country   String   // ISO-3166 alpha-2
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  orders    Order[]  @relation("ShippingAddress")
+
+  @@map("addresses")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String  // bcrypt-hashed refresh token
+  userAgent    String?
+  ip           String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ---- Catalog --------------------------------------------------------------
+
+model Product {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  // Multi-store: a product belongs to exactly one storefront. The same physical
+  // SKU sold in two countries is two rows — separate inventory and pricing.
+  store         Store
+  category      ProductCategory
+  name          String
+  shortDesc     String
+  longDesc      String   @db.Text
+
+  // Pricing
+  price         Decimal  @db.Decimal(12, 2)
+  currency      Currency
+  compareAtPrice Decimal? @db.Decimal(12, 2)
+
+  // Inventory
+  sku           String   @unique
+  stock         Int      @default(0)
+  lowStockThreshold Int  @default(10)
+
+  // Display
+  badge         String?  // "Best Seller" | "Organic" | "Seasonal" | "Highly Potent" | "New" | "Popular"
+  primaryImage  String   // Cloudinary URL
+  galleryImages String[] // additional images
+  ratingAvg     Decimal  @db.Decimal(3, 2) @default(0.0)
+  ratingCount   Int      @default(0)
+
+  // Smoothie attributes (nullable for non-smoothie products)
+  flavorProfile String[] // ["Sweet", "Tart", "Citrus"]
+  benefits      String[] // ["Energy", "Immunity", "Detox", "Hydration"]
+  nutrition     Json?    // { calories, sugarG, fiberG, vitaminCPct }
+  ingredients   String[] @default([])
+
+  // Lifecycle
+  isActive      Boolean  @default(true)
+  publishedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  orderItems    OrderItem[]
+  reviews       Review[]
+  reportTopFor  DailySalesReport[] @relation("TopProduct")
+
+  @@index([store, category, isActive])
+  @@index([store, badge])
+  @@map("products")
+}
+
+// Atomic ingredients available in the Smoothie Builder.
+// Kept separate from Product since they are not directly sellable on their own.
+model BuilderIngredient {
+  id           String   @id @default(cuid())
+  store        Store
+  group        String   // "CUP_SIZE" | "LIQUID_BASE" | "FRUIT" | "BOOSTER"
+  name         String
+  // Either a flat add-on (+$0.75) or a base price (for CUP_SIZE)
+  priceDelta   Decimal  @db.Decimal(10, 2)
+  currency     Currency
+  // For CUP_SIZE: capacity in oz
+  capacityOz   Int?
+  iconUrl      String?
+  calories     Int      @default(0)
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+
+  @@index([store, group, isActive])
+  @@map("builder_ingredients")
+}
+
+model Review {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  authorName String
+  authorEmail String?
+  rating     Int      // 1-5
+  body       String   @db.Text
+  verifiedPurchase Boolean @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([productId])
+  @@map("reviews")
+}
+
+// ---- Wellness Hub ---------------------------------------------------------
+
+model Article {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  subtitle    String?
+  body        String   @db.Text  // MDX content
+  category    String   // "Nutrition" | "Recipes" | "Rituals" | ...
+  coverImage  String
+  readMinutes Int
+  isFeatured  Boolean  @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category, publishedAt])
+  @@map("articles")
+}
+
+// ---- Orders & payments ----------------------------------------------------
+
+model Order {
+  id              String   @id @default(cuid())
+  // Human-readable order number — generated on creation
+  number          String   @unique // e.g. "ORD-7742"
+
+  // Customer: anonymous orders are supported (guest checkout) — userId is
+  // nullable; guests must still provide email + WhatsApp.
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id])
+  guestEmail      String?
+  guestWhatsapp   String?
+  guestName       String?
+
+  store           Store
+  currency        Currency
+  status          OrderStatus @default(PENDING_PAYMENT)
+
+  // Money — all stored in minor units of `currency` as Decimal for safety.
+  subtotal        Decimal  @db.Decimal(12, 2)
+  deliveryFee     Decimal  @db.Decimal(12, 2)
+  taxAmount       Decimal  @db.Decimal(12, 2)
+  discountAmount  Decimal  @db.Decimal(12, 2) @default(0)
+  totalAmount     Decimal  @db.Decimal(12, 2)
+
+  // Fulfillment
+  deliveryMethod  DeliveryMethod
+  shippingAddressId String?
+  shippingAddress Address? @relation("ShippingAddress", fields: [shippingAddressId], references: [id])
+  customerNote    String?
+
+  // Discount / promo
+  promoCode       String?
+
+  // Timestamps
+  placedAt        DateTime @default(now())
+  paidAt          DateTime?
+  shippedAt       DateTime?
+  deliveredAt     DateTime?
+  cancelledAt    DateTime?
+  updatedAt       DateTime @updatedAt
+
+  items           OrderItem[]
+  payment         Payment?
+  notifications   Notification[]
+  statusHistory   OrderStatusEvent[]
+
+  @@index([userId, placedAt(sort: Desc)])
+  @@index([store, status, placedAt(sort: Desc)])
+  @@index([placedAt(sort: Desc)])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String?
+  product        Product? @relation(fields: [productId], references: [id])
+
+  // Snapshot fields — preserved against product mutation after order is placed.
+  nameSnapshot   String
+  unitPriceSnapshot Decimal @db.Decimal(12, 2)
+  imageSnapshot  String?
+
+  quantity       Int     @default(1)
+  lineTotal      Decimal @db.Decimal(12, 2)
+
+  // JSONB customizations for smoothie-builder lines. Shape:
+  // {
+  //   "cupSize":  { "id": "...", "name": "Regular (12oz)", "delta": 6.50 },
+  //   "liquidBase": { "id": "...", "name": "Almond Milk", "delta": 0.50 },
+  //   "fruits":   [ { "id": "...", "name": "Mango", "delta": 1.25 }, ... ],
+  //   "boosters": [ { "id": "...", "name": "Chia Seeds", "delta": 1.00 } ],
+  //   "calories": 240,
+  //   "tags": ["Energy", "Hydration"]
+  // }
+  customizations Json?
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderStatusEvent {
+  id        String      @id @default(cuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  from      OrderStatus?
+  to        OrderStatus
+  reason    String?
+  actorId   String?     // user.id who triggered (null for system / payment webhook)
+  createdAt DateTime    @default(now())
+
+  @@index([orderId, createdAt])
+  @@map("order_status_events")
+}
+
+model Payment {
+  id              String         @id @default(cuid())
+  orderId         String         @unique
+  order           Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  gateway         PaymentGateway
+  status          PaymentStatus  @default(INITIATED)
+  amount          Decimal        @db.Decimal(12, 2)
+  currency        Currency
+
+  // Gateway references
+  gatewayRef      String?        // Paystack reference / Stripe payment_intent
+  gatewayMetadata Json?
+
+  // For BANK_TRANSFER: customer uploads screenshot
+  proofUrl        String?        // Cloudinary url
+  proofUploadedAt DateTime?
+
+  // Verification
+  verifiedById    String?        // admin user.id who verified manually
+  verifiedAt      DateTime?
+  failureReason   String?
+
+  // Refund
+  refundedAmount  Decimal?       @db.Decimal(12, 2)
+  refundedAt      DateTime?
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([gateway, status])
+  @@index([gatewayRef])
+  @@map("payments")
+}
+
+// ---- Reporting ------------------------------------------------------------
+
+model DailySalesReport {
+  id              String   @id @default(cuid())
+  reportDate      DateTime @db.Date    // the day being reported on
+  store           Store
+  ordersCount     Int
+  itemsCount      Int
+  grossRevenue    Decimal  @db.Decimal(14, 2)
+  netRevenue      Decimal  @db.Decimal(14, 2) // gross - refunds - discounts
+  averageOrderValue Decimal @db.Decimal(12, 2)
+  topProductId    String?
+  topProduct      Product? @relation("TopProduct", fields: [topProductId], references: [id])
+  topProductSales Int      @default(0)
+
+  // Breakdowns persisted for fast dashboard reads (no recomputation)
+  categoryBreakdown Json?  // { SMOOTHIE: 12, JUICE: 8, ... }
+  channelBreakdown  Json?  // { PAYSTACK: 14, STRIPE: 5, BANK_TRANSFER: 2 }
+
+  generatedAt     DateTime @default(now())
+
+  @@unique([reportDate, store])
+  @@index([reportDate(sort: Desc)])
+  @@map("daily_sales_reports")
+}
+
+// ---- Notifications --------------------------------------------------------
+
+model Notification {
+  id          String              @id @default(cuid())
+  userId      String?
+  user        User?               @relation(fields: [userId], references: [id])
+  orderId     String?
+  order       Order?              @relation(fields: [orderId], references: [id])
+  channel     NotificationChannel
+  status      NotificationStatus  @default(QUEUED)
+  to          String              // email address or WhatsApp number
+  template    String              // "order_placed" | "payment_confirmed" | "shipped" | "abandoned_cart" | "daily_report"
+  payload     Json                // template variables
+  attempts    Int                 @default(0)
+  lastError   String?             @db.Text
+  scheduledFor DateTime?          // for cart abandonment (24h delay)
+  sentAt      DateTime?
+  createdAt   DateTime            @default(now())
+
+  @@index([status, scheduledFor])
+  @@index([orderId])
+  @@map("notifications")
+}
+
+// ---- Audit / security -----------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation("AuditActor", fields: [actorId], references: [id])
+  action    String   // e.g. "ORDER_STATUS_CHANGE" | "PAYMENT_VERIFIED" | "PRODUCT_UPDATE"
+  entity    String   // table name
+  entityId  String?
+  before    Json?
+  after     Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}

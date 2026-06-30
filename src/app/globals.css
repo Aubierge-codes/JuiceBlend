@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================================================
+ *  KcBlendz — global design system
+ *
+ *  Anchored to the Visily designs:
+ *   - Kale-green primary (#10B981) for CTAs, prices, active states
+ *   - Mango-orange (#F97316) for the Smoothie Builder accent CTA
+ *   - Off-white surface with peach + mint section accents
+ *   - Fraunces (display) paired with Inter (UI)
+ * ========================================================================= */
+
+:root {
+  /* Surfaces */
+  --surface-base: #ffffff;
+  --surface-soft: #faf8f4;
+  --surface-section: #f8fafc;
+  --surface-peach: #fff1e6;
+  --surface-mint: #f0fdf4;
+
+  /* Ink */
+  --ink: #0f172a;
+  --ink-soft: #1f2937;
+  --ink-muted: #475569;
+  --ink-ghost: #94a3b8;
+  --ink-inverted: #ffffff;
+
+  /* Brand */
+  --kale-50: #ecfdf5;
+  --kale-100: #d1fae5;
+  --kale-500: #10b981;
+  --kale-600: #059669;
+
+  --mango-50: #fff7ed;
+  --mango-500: #f97316;
+  --mango-600: #ea580c;
+
+  /* Lines */
+  --hairline: #e2e8f0;
+  --hairline-strong: #cbd5e1;
+
+  /* Radius */
+  --radius-card: 1rem;
+  --radius-panel: 1.25rem;
+
+  /* Motion */
+  --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 160ms;
+  --duration-base: 280ms;
+  --duration-slow: 520ms;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  scroll-behavior: smooth;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--surface-base);
+  color: var(--ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+}
+
+::selection {
+  background: var(--kale-100);
+  color: var(--kale-600);
+}
+
+/* Display headings — Fraunces variable axis used for italic-accent words */
+.display-italic {
+  font-family: var(--font-display), Georgia, serif;
+  font-style: italic;
+  font-feature-settings: "ss01", "ss03";
+  letter-spacing: -0.03em;
+}
+
+/* Section-heading subtitle pill, e.g. "The Daily Ritual for Wellness" */
+.eyebrow-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.85rem;
+  border-radius: 9999px;
+  background: var(--kale-50);
+  color: var(--kale-600);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid color-mix(in srgb, var(--kale-500) 22%, transparent);
+}
+
+/* Hairline divider used between cart rows, table rows */
+.hairline {
+  border-color: var(--hairline);
+}
+
+/* Glassy hero callout ("In Season Now") */
+.glass-callout {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: saturate(140%) blur(14px);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 10px 30px -10px rgba(15, 23, 42, 0.18);
+}
+
+/* Skeleton shimmer for loading product cards */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #f1f5f9 0%,
+    #e2e8f0 50%,
+    #f1f5f9 100%
+  );
+  background-size: 936px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Reduced motion override — respect user OS preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Scrollbar polish — kept subtle, light, doesn't fight cream surfaces */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border: 3px solid var(--surface-base);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
