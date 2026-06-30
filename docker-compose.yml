@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kcblendz-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kcblendz
+      POSTGRES_PASSWORD: kcblendz
+      POSTGRES_DB: kcblendz
+    ports:
+      - "5433:5432"
+    volumes:
+      - kcblendz_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kcblendz"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: kcblendz-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - kcblendz_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+volumes:
+  kcblendz_postgres:
+  kcblendz_redis:
